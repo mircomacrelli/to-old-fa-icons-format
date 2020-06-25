@@ -7,26 +7,46 @@ import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
 import java.text.MessageFormat;
 import java.util.Map;
 
 public final class Main {
-    public static void main(String[] args) throws IOException {
-        var icons = readIcons(args[0]);
+    private static final String HOME = "user.home";
+    private static final String UNICODE_DB = "/Library/Application Support/xScope/unicode.db";
+    private static final String DELETE_LAST_IMPORT = "DELETE FROM aliases WHERE type = 4";
+    private static final String INSERT_ICON = "INSERT INTO aliases (codePoint, name, type) VALUES (?, ?, 4)";
 
-        StringBuilder sql = new StringBuilder(40 * 1024);
-        sql.append("DELETE FROM aliases WHERE type = 4;\n");
-        sql.append("INSERT INTO aliases (codePoint, name, type) VALUES\n");
-
-        for (Map.Entry<String, Icon> icon : icons.entrySet()) {
-            String codePoint = Integer.toString(Integer.valueOf(icon.getValue().getUnicode(), 16));
-            sql.append(MessageFormat.format("  ({0}, ''{1}'', 4),\n", codePoint, icon.getKey()));
+    public static void main(String[] args) throws IOException, SQLException {
+        Path db = Paths.get(System.getProperty(HOME), UNICODE_DB).normalize();
+        if (Files.notExists(db)) {
+            System.err.println(MessageFormat.format("the file ''{0}'' does not exist!", db));
+            return;
         }
 
-        sql.setLength(sql.length() - 2);
-        sql.append(';');
+        var icons = readIcons(args[0]);
 
-        System.out.println(sql);
+        String url = "jdbc:sqlite:" + db;
+        try (Connection conn = DriverManager.getConnection(url);
+             PreparedStatement delete = conn.prepareStatement(DELETE_LAST_IMPORT);
+             PreparedStatement insert = conn.prepareStatement(INSERT_ICON)) {
+            int rows = delete.executeUpdate();
+            System.out.println("deleted " + rows + " icons");
+
+            for (var icon : icons.entrySet()) {
+                insert.setInt(1, Integer.parseInt(icon.getValue().getUnicode(), 16));
+                insert.setString(2, icon.getKey());
+                insert.addBatch();
+            }
+
+            insert.executeBatch();
+        }
     }
 
     private static Map<String, Icon> readIcons(String path) throws IOException {
